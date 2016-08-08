@@ -2,7 +2,7 @@
 
 # 已知bug 必须先行引入这两个库，否则会报错
 import numpy
-import matplotlib.image as mpimg
+import matplotlib.image
 import sys
 
 import tensorflow as tf
@@ -60,7 +60,7 @@ outputs = tf.placeholder(tf.float32)
 
 # 创建两个lambda，用于初始化偏置参数与权重
 # 偏置项的值由传入参数矢量化确定
-bi = lambda inits, size, name: tf.Variable(inits * tf.ones([size]), name=name)
+bi = lambda initial_values, size, name: tf.Variable(initial_values * tf.ones([size]), name=name)
 # 权值由随机生成的正态分布确定
 wi = lambda shape, name: tf.Variable(tf.random_normal(shape, name=name)) / math.sqrt(shape[0])
 
@@ -69,13 +69,13 @@ wi = lambda shape, name: tf.Variable(tf.random_normal(shape, name=name)) / math.
 shapes = zip(layer_sizes[:-1], layer_sizes[1:])
 
 # 编码器（有监督学习）权值 W
-# 解码器（无监督学习）全职 V
-# batch norn中用于重构变换过程的beta（可学习）
-# batch norn中用于重构变换过程的gamma（可学习）
-weights = {'W': [wi(s, "W") for s in shapes], # Encoder weights
-           'V': [wi(s[::-1], "V") for s in shapes], # Decoder weights
-           'beta': [bi(0.0, layer_sizes[l+1], "beta") for l in range(L)], # batch normalization parameter to shift the normalized value
-           'gamma': [bi(1.0, layer_sizes[l+1], "beta") for l in range(L)]} # batch normalization parameter to scale the normalized value
+# 解码器（无监督学习）权值 V
+# batch norm中用于重构变换过程的beta（可学习）
+# batch norm中用于重构变换过程的gamma（可学习）
+weights = {'W': [wi(s, "W") for s in shapes],
+           'V': [wi(s[::-1], "V") for s in shapes],
+           'beta': [bi(0.0, layer_sizes[l+1], "beta") for l in range(L)],
+           'gamma': [bi(1.0, layer_sizes[l+1], "beta") for l in range(L)]}
 
 # 调整噪点影响程度的scale值
 noise_std = 0.3
@@ -98,10 +98,6 @@ split_lu = lambda x: (labeled(x), unlabeled(x))
 
 # 留下一个bool位
 is_training = tf.placeholder(tf.bool)
-
-print(denoising_cost)
-
-exit()
 
 # 设置衰减value，用于维持参数的移动平均（moving average）
 # decay是指新的一轮数据（l层数据）进入时，旧的数据（l-1层数的数据）权重降低的百分比
@@ -236,10 +232,12 @@ y, clean = encoder(inputs, 0.0)
 
 print "=== Decoder ==="
 
+
 # 定义高斯去噪器，输入z corr，输出去噪后的预测值
 # 论文17页
 def g_gauss(z_c, u, size):
-    "gaussian denoising function proposed in the original paper"
+
+    """gaussian denoising function proposed in the original paper"""
     wi = lambda inits, name: tf.Variable(inits * tf.ones([size]), name=name)
     a1 = wi(0., 'a1')
     a2 = wi(1., 'a2')

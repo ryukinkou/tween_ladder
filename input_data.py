@@ -19,7 +19,7 @@ TRAIN_IMAGES = 'train-images-idx3-ubyte.gz'
 TRAIN_LABELS = 'train-labels-idx1-ubyte.gz'
 TEST_IMAGES = 't10k-images-idx3-ubyte.gz'
 TEST_LABELS = 't10k-labels-idx1-ubyte.gz'
-TWEEN_DATA_DIR = './tween_data'
+TWEEN_DATA_DIR = './TWEEN_data'
 VALIDATION_SIZE = 0
 
 
@@ -234,21 +234,21 @@ class DataSet(object):
 # 混合数据集
 class SemiMNISTDataSet(object):
 
-    def __init__(self, images, labels, num_labeled):
-
-        # 设定标记的数量
-        self.num_labeled = num_labeled
+    def __init__(self, images, labels, num_labeled_examples):
 
         # 未标记数据集设定
         # 使用全部数据集为未标记数据
         self.all_data_set = DataSet(images, labels)
         self.unlabeled_data_set = self.all_data_set
 
+        # num of labeled data
+        self._num_labeled_examples = num_labeled_examples
+
         # 未标记数据集的数量
-        self.num_examples = self.unlabeled_data_set.num_examples
+        self._num_unlabeled_examples = self.unlabeled_data_set.num_examples
 
         # 生成索引数组并打散顺序
-        indices = numpy.arange(self.num_examples)
+        indices = numpy.arange(self.num_unlabeled_examples)
         shuffled_indices = numpy.random.permutation(indices)
 
         # 打散数据集
@@ -259,7 +259,7 @@ class SemiMNISTDataSet(object):
         y = numpy.array([numpy.arange(10)[l == 1][0] for l in labels])
 
         num_classes = y.max() + 1
-        num_from_each_class = num_labeled / num_classes
+        num_from_each_class = num_labeled_examples / num_classes
         i_labeled = []
         for clazz in range(num_classes):
 
@@ -272,20 +272,43 @@ class SemiMNISTDataSet(object):
 
         self.labeled_data_set = DataSet(l_images, l_labels)
 
-    def extend_labeled_data_set(self, extra_images, extra_labels):
+    @property
+    def num_labeled_examples(self):
+        return self._num_labeled_examples
+
+    @num_labeled_examples.setter
+    def num_labeled_examples(self, value):
+        self._num_labeled_examples = value
+
+    @property
+    def num_unlabeled_examples(self):
+        return self._num_unlabeled_examples
+
+    @num_unlabeled_examples.setter
+    def num_unlabeled_examples(self, value):
+        self._num_unlabeled_examples = value
+
+    def extend_data_set(self, extra_images, extra_labels):
 
         extra_data_set = DataSet(extra_images, extra_labels)
 
         self.labeled_data_set.images = numpy.concatenate((self.labeled_data_set.images, extra_data_set.images))
         self.labeled_data_set.labels = numpy.concatenate((self.labeled_data_set.labels, extra_data_set.labels))
-        # self.num_labeled = len(self.labeled_data_set.images)
 
-        print('c')
+        # labeled data set also can be used as unsupervised learning
+        self.all_data_set.images = numpy.concatenate((self.all_data_set.images, extra_data_set.images))
+        self.all_data_set.labels = numpy.concatenate((self.all_data_set.labels, extra_data_set.labels))
+
+        # adjust nums
+        self._num_labeled_examples = len(self.labeled_data_set.images)
+        self._num_unlabeled_examples = len(self.unlabeled_data_set.images)
+        self.labeled_data_set.num_examples = len(self.labeled_data_set.images)
+        self.unlabeled_data_set.num_examples = len(self.unlabeled_data_set.images)
 
     def next_batch(self, batch_size):
         unlabeled_images, _ = self.unlabeled_data_set.next_batch(batch_size)
-        if batch_size > self.num_labeled:
-            labeled_images, labels = self.labeled_data_set.next_batch(self.num_labeled)
+        if batch_size > self.num_labeled_examples:
+            labeled_images, labels = self.labeled_data_set.next_batch(self.num_labeled_examples)
         else:
             labeled_images, labels = self.labeled_data_set.next_batch(batch_size)
         images = numpy.vstack([labeled_images, unlabeled_images])
@@ -326,23 +349,18 @@ def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
     # load
     tween_images, tween_labeled = load_tween_images_and_labels(TWEEN_DATA_DIR, True)
 
-
-
     data_sets.train = SemiMNISTDataSet(train_images, train_labels, num_labeled)
 
     # 使用补间数据扩展标记数据集
-    data_sets.train.extend_labeled_data_set(tween_images, tween_labeled)
+    data_sets.train.extend_data_set(tween_images, tween_labeled)
 
     data_sets.validation = DataSet(validation_images, validation_labels)
 
     data_sets.test = DataSet(test_images, test_labels)
 
+    print(data_sets.train.labeled_data_set.num_examples)
     return data_sets
-
 
 if __name__ == "__main__":
 
-    # a = extract_images("./MNIST_data/train-images-idx3-ubyte.gz")
-    # b, bl = load_tween_images_and_labels("./tween_data", True)
-    # c = extract_labels("./MNIST_data/train-labels-idx1-ubyte.gz", True)
     read_data_sets("MNIST_data", num_labeled=100, one_hot=True)
