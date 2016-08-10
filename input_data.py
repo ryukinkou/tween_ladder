@@ -71,6 +71,18 @@ def rgb2gray(rgb):
     return numpy.dot(rgb[..., :3], [0.299 * 255, 0.587 * 255, 0.114 * 255])
 
 
+def inverse_gray_scale(gray_scale, two_direction_threshold=0):
+    for i in range(len(gray_scale)):
+        for j in range(len(gray_scale[0])):
+            if two_direction_threshold != 0:
+                if (255 - gray_scale[i, j]) >= two_direction_threshold:
+                    gray_scale[i, j] = 255.0
+                else:
+                    gray_scale[i, j] = 0.0
+            else:
+                gray_scale[i, j] = 255.0 - gray_scale[i, j]
+
+
 def load_tween_images_and_labels(filename, one_hot=False):
 
     """
@@ -100,7 +112,7 @@ def load_tween_images_and_labels(filename, one_hot=False):
             sample_name = os.path.join(root, f)
             rgb = mpimg.imread(sample_name)
             gray_scale = rgb2gray(rgb)
-
+            inverse_gray_scale(gray_scale, 128)
             if cols == 0 or rows == 0 or num_images == 0:
                 num_images = len(files) * num_dirs
                 rows = len(gray_scale)
@@ -290,6 +302,13 @@ class SemiMNISTDataSet(object):
 
     def extend_data_set(self, extra_images, extra_labels):
 
+        # shuffle data set
+        indices = numpy.arange(len(extra_images))
+        shuffled_indices = numpy.random.permutation(indices)
+
+        extra_images = extra_images[shuffled_indices]
+        extra_labels = extra_labels[shuffled_indices]
+
         extra_data_set = DataSet(extra_images, extra_labels)
 
         self.labeled_data_set.images = numpy.concatenate((self.labeled_data_set.images, extra_data_set.images))
@@ -346,21 +365,19 @@ def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
     train_images = train_images[VALIDATION_SIZE:]
     train_labels = train_labels[VALIDATION_SIZE:]
 
-    # load
-    tween_images, tween_labeled = load_tween_images_and_labels(TWEEN_DATA_DIR, True)
-
     data_sets.train = SemiMNISTDataSet(train_images, train_labels, num_labeled)
 
     # 使用补间数据扩展标记数据集
-    data_sets.train.extend_data_set(tween_images, tween_labeled)
+    tween_images, tween_labels = load_tween_images_and_labels(TWEEN_DATA_DIR, True)
+    data_sets.train.extend_data_set(tween_images, tween_labels)
+
+    print("Labeled   examples num :" + str(data_sets.train.num_labeled_examples))
+    print("Unlabeled examples num :" + str(data_sets.train.num_unlabeled_examples))
 
     data_sets.validation = DataSet(validation_images, validation_labels)
-
     data_sets.test = DataSet(test_images, test_labels)
-
-    print(data_sets.train.labeled_data_set.num_examples)
     return data_sets
 
+# debug
 if __name__ == "__main__":
-
     read_data_sets("MNIST_data", num_labeled=100, one_hot=True)

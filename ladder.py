@@ -1,48 +1,39 @@
 # -*- coding: utf-8 -*-
 
 # 已知bug 必须先行引入这两个库，否则会报错
-import numpy
 import matplotlib.image
-import sys
 
 import tensorflow as tf
 from tensorflow.python import control_flow_ops
 import math
+import sys
 import os
 import csv
 from tqdm import tqdm
 
-# 读取数据
 import input_data
 
-# 设置gpu使用数量
+# how many gpus to use
 tf.app.flags.DEFINE_integer("num_gpus", 2, "How many GPUs to use.")
 
-# 每一层的神经元数量设定，为全链接层
-# 第一层为输入层，28*28
-# 最后一层为分类输出层，有10个分类
+# sizes of each layer, input: 28*28, output: 10
 layer_sizes = [784, 1000, 500, 250, 250, 250, 10]
 
 # 层数，大L
 L = len(layer_sizes) - 1
 
-# 总样本数：0有15000个，1-9个有5000个。
-num_unlabeled_samples = 60000
-num_labeled_samples = 1000
-
-num_examples = num_unlabeled_samples + num_labeled_samples
+num_examples = 60000
 
 # 全样本扫描循环次数
 # 样本数量庞大，通过设定mini batch的大小分批扫描，所有样本都扫描一次算一次全样本扫描
 num_epochs = 150
 
-# 类别数量
-num_labeled = 10
+# num of labeled examples
+num_labeled = 100
 
 # 冷启动的lr值
 starter_learning_rate = 0.02
 
-# 经历15次全样本扫描后，lr值开始衰减
 # epoch after which to begin learning rate decay
 decay_after = 15
 
@@ -50,11 +41,11 @@ decay_after = 15
 batch_size = 100
 
 # ( 总样本数 / mini_batch = 一次全样本扫描所需要的批次 ) * 全样本扫描次数 = 总的循环次数
-# number of loop iterations
 num_iter = (num_examples / batch_size) * num_epochs
 
 # 为输入值的张量分配一块内存区域，类型为float32，shape为一维数组，数组长度为输入层神经元个数
 inputs = tf.placeholder(tf.float32, shape=(None, layer_sizes[0]))
+
 # 为输出值的张量分配一块内存区域，大小暂时未定
 outputs = tf.placeholder(tf.float32)
 
@@ -64,9 +55,18 @@ bi = lambda initial_values, size, name: tf.Variable(initial_values * tf.ones([si
 # 权值由随机生成的正态分布确定
 wi = lambda shape, name: tf.Variable(tf.random_normal(shape, name=name)) / math.sqrt(shape[0])
 
-# 制作层依赖pair making
-# shapes of linear layers
+# pair making
 shapes = zip(layer_sizes[:-1], layer_sizes[1:])
+
+sess = tf.Session()
+
+test = wi((10, 20), "test")
+
+init_op = tf.initialize_all_variables()
+
+with tf.Session() as sess:
+    sess.run(init_op)
+    print (sess.run(test))
 
 # 编码器（有监督学习）权值 W
 # 解码器（无监督学习）权值 V
@@ -81,10 +81,10 @@ weights = {'W': [wi(s, "W") for s in shapes],
 noise_std = 0.3
 
 # 去噪用的cost的超参数，用于控制每一层的重要度（importance）
-denoising_cost = [1000.0, 10.0, 0.10, 0.10, 0.10, 0.10, 0.10] # hyperparameters that denote the importance of each layer
+denoising_cost = [1000.0, 10.0, 0.10, 0.10, 0.10, 0.10, 0.10]
 
 # 合并两个二维tensor，0代表行合并，1代表列合并
-join = lambda l, u: tf.concat(0, [l, u])
+join = lambda t1, t2: tf.concat(0, [t1, t2])
 
 # 切片处理
 # 切出前batch_size个样本作为标记数据
