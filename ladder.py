@@ -6,39 +6,50 @@ import matplotlib.image
 import tensorflow as tf
 from tensorflow.python import control_flow_ops
 import math
-import sys
 import os
 import csv
 from tqdm import tqdm
 
 import input_data
 
-# how many gpus to use
+# how many GPUs to use
 tf.app.flags.DEFINE_integer("num_gpus", 2, "How many GPUs to use.")
+
+# ====== hyper parameters ======
+
+# num of total examples
+num_examples = 60000
+
+# num of labeled examples
+num_labeled = 60
+
+# num of extra labeled examples
+num_extra = 0
+
+# extend mode only
+is_extend_or_replace = False
+if is_extend_or_replace:
+    num_labeled += num_extra
+
+# num of full scan epoch
+num_epochs = 60
+
+# mini batch
+batch_size = 40
+if batch_size < num_labeled:
+    batch_size = num_labeled
 
 # sizes of each layer, input: 28*28, output: 10
 layer_sizes = [784, 1000, 500, 250, 250, 250, 10]
 
-# 层数，大L
+# num of layers, except output layer
 L = len(layer_sizes) - 1
-
-num_examples = 60000
-
-# 全样本扫描循环次数
-# 样本数量庞大，通过设定mini batch的大小分批扫描，所有样本都扫描一次算一次全样本扫描
-num_epochs = 150
-
-# num of labeled examples
-num_labeled = 100
 
 # 冷启动的lr值
 starter_learning_rate = 0.02
 
 # epoch after which to begin learning rate decay
 decay_after = 15
-
-# mini batch的大小
-batch_size = 100
 
 # ( 总样本数 / mini_batch = 一次全样本扫描所需要的批次 ) * 全样本扫描次数 = 总的循环次数
 num_iter = (num_examples / batch_size) * num_epochs
@@ -55,18 +66,17 @@ bi = lambda initial_values, size, name: tf.Variable(initial_values * tf.ones([si
 # 权值由随机生成的正态分布确定
 wi = lambda shape, name: tf.Variable(tf.random_normal(shape, name=name)) / math.sqrt(shape[0])
 
-# pair making
+# tensor flow session init test
+if False:
+    sess = tf.Session()
+    test = wi((10, 20), "test")
+    init_op = tf.initialize_all_variables()
+    with tf.Session() as sess:
+        sess.run(init_op)
+        print (sess.run(test))
+
+# pairing
 shapes = zip(layer_sizes[:-1], layer_sizes[1:])
-
-sess = tf.Session()
-
-test = wi((10, 20), "test")
-
-init_op = tf.initialize_all_variables()
-
-with tf.Session() as sess:
-    sess.run(init_op)
-    print (sess.run(test))
 
 # 编码器（有监督学习）权值 W
 # 解码器（无监督学习）权值 V
@@ -84,7 +94,7 @@ noise_std = 0.3
 denoising_cost = [1000.0, 10.0, 0.10, 0.10, 0.10, 0.10, 0.10]
 
 # 合并两个二维tensor，0代表行合并，1代表列合并
-join = lambda t1, t2: tf.concat(0, [t1, t2])
+tensor_join = lambda t1, t2: tf.concat(0, [t1, t2])
 
 # 切片处理
 # 切出前batch_size个样本作为标记数据
@@ -96,7 +106,7 @@ unlabeled = lambda x: tf.slice(x, [batch_size, 0], [-1, -1]) if x is not None el
 # pair
 split_lu = lambda x: (labeled(x), unlabeled(x))
 
-# 留下一个bool位
+# 留一个bool位
 is_training = tf.placeholder(tf.bool)
 
 # 设置衰减value，用于维持参数的移动平均（moving average）
@@ -105,24 +115,25 @@ ewma = tf.train.ExponentialMovingAverage(decay=0.99)
 # this list stores the updates to be made to average mean and variance
 bn_assigns = []
 
+
 # batch norm处理
 def batch_normalization(batch, mean=None, var=None):
-    if mean == None or var == None:
+    if mean is None or var is None:
         # 计算batch的均值与方差
         mean, var = tf.nn.moments(batch, axes=[0])
         # 对batch中的每一个数值进行基于逆标准差的normalization处理
     return (batch - mean) / tf.sqrt(var + tf.constant(1e-10))
 
-# average mean and variance of all layers
 # 为每一层的running_mean和running_var分配空间并初始化
 running_mean = [tf.Variable(tf.constant(0.0, shape=[l]), trainable=False) for l in layer_sizes[1:]]
 running_var = [tf.Variable(tf.constant(1.0, shape=[l]), trainable=False) for l in layer_sizes[1:]]
+
 
 # 更新batch normalization
 def update_mean_var_and_batch_normalization(batch, l):
 
     # 一个batch更新一次，而非一个epoch
-    "batch normalize + update average mean and variance of layer l"
+    """batch normalize + update average mean and variance of layer l"""
     mean, var = tf.nn.moments(batch, axes=[0])
     # 设定上一层的running_mean为mean值
     assign_mean = running_mean[l-1].assign(mean)
@@ -134,6 +145,7 @@ def update_mean_var_and_batch_normalization(batch, l):
     # 优先计算玩assign_mean和assign_var后在计算bn值。是一种强制控制计算先后顺序的方法
     with tf.control_dependencies([assign_mean, assign_var]):
         return (batch - mean) / tf.sqrt(var + 1e-10)
+
 
 # 编码器
 def encoder(inputs, noise_std):
@@ -182,29 +194,30 @@ def encoder(inputs, noise_std):
             # 且batch normalization中标记数据和未标记数据分开处理
             if noise_std > 0:
                 # 对标记数据和非标记数据分别进行batch_norm，然后合并
-                z = join(batch_normalization(z_pre_l), batch_normalization(z_pre_u, m, v))
+                z = tensor_join(batch_normalization(z_pre_l), batch_normalization(z_pre_u, m, v))
                 # 加入噪点，生成一个与z_pre同样大小的向量，用随机数填充，然后乘以随机噪点权重
                 z += tf.random_normal(tf.shape(z_pre)) * noise_std
             else:
                 # Clean encoder
-                # batch normalization + update the average mean and variance using batch mean and variance of labeled examples
+                # batch normalization +
+                # update the average mean and variance using batch mean and variance of labeled examples
                 # 如果要训练干净的编码器，并不需要加入随机噪点
-                z = join(update_mean_var_and_batch_normalization(z_pre_l, l), batch_normalization(z_pre_u, m, v))
+                z = tensor_join(update_mean_var_and_batch_normalization(z_pre_l, l), batch_normalization(z_pre_u, m, v))
             return z
 
-	#else:
+    # else:
         # 进入评估分支
         def eval_batch_norm():
             # Evaluation batch normalization
             # obtain average mean and variance and use it to normalize the batch
-    	    mean = ewma.average(running_mean[l-1])
-    	    var = ewma.average(running_var[l-1])
-            z = batch_normalization(z_pre, mean, var)
+            mean = ewma.average(running_mean[l-1])
+            var = ewma.average(running_var[l-1])
+            z_eval = batch_normalization(z_pre, mean, var)
             # Instead of the above statement, the use of the following 2 statements containing a typo 
             # consistently produces a 0.2% higher accuracy for unclear reasons.
             # m_l, v_l = tf.nn.moments(z_pre_l, axes=[0])
             # z = join(batch_normalization(z_pre_l, m_l, mean, var), batch_normalization(z_pre_u, mean, var))
-            return z
+            return z_eval
 
         # perform batch normalization according to value of boolean "training" placeholder:
         # training是一个bool值，根据改值的设定，确定是进入训练还是评价流程
@@ -223,14 +236,14 @@ def encoder(inputs, noise_std):
     d['labeled']['h'][l], d['unlabeled']['h'][l] = split_lu(h)
     return h, d
 
-print "=== Corrupted Encoder ==="
+print("=== Corrupted Encoder ===")
 y_c, corr = encoder(inputs, noise_std)
 
-print "=== Clean Encoder ==="
+print("=== Clean Encoder ===")
 # 设置noise_std为0训练一个clean encoder
 y, clean = encoder(inputs, 0.0)
 
-print "=== Decoder ==="
+print("=== Decoder ===")
 
 
 # 定义高斯去噪器，输入z corr，输出去噪后的预测值
@@ -263,7 +276,7 @@ d_cost = [] # to store the denoising cost of all layers
 
 # 从第L层开始，迭代到第0层
 for l in range(L, -1, -1):
-    print "Layer ", l, ": ", layer_sizes[l+1] if l+1 < len(layer_sizes) else None, " -> ", layer_sizes[l], ", denoising cost: ", denoising_cost[l]
+    print("Layer ", l, ": ", layer_sizes[l+1] if l+1 < len(layer_sizes) else None, " -> ", layer_sizes[l], ", denoising cost: ", denoising_cost[l])
 
     # 取出每一层激活后的值（最终结果）
     z, z_c = clean['unlabeled']['z'][l], corr['unlabeled']['z'][l]
@@ -273,7 +286,6 @@ for l in range(L, -1, -1):
     if l == L:
         u = unlabeled(y_c)
     else:
-        # ？？
         u = tf.matmul(z_est[l+1], weights['V'][l])
     u = batch_normalization(u)
     # z_est是根据z(l+1)的数据还原出来的z的预测值（去噪后）
@@ -322,15 +334,21 @@ bn_updates = tf.group(*bn_assigns)
 with tf.control_dependencies([train_step]):
     train_step = tf.group(bn_updates)
 
-print "===  Loading Data ==="
-mnist = input_data.read_data_sets("MNIST_data", num_labeled=num_labeled, one_hot=True)
+print("===  Loading Data ===")
+MNIST = input_data.read_data_sets(
+    "MNIST_data",
+    num_labeled=num_labeled,
+    num_extra=num_extra,
+    is_extend_or_replace=is_extend_or_replace,
+    one_hot=True)
 
-# num_labeled = num_labeled
-# num_labeled = 1002
+# refresh parameter
+num_examples = MNIST.train.num_unlabeled_examples
+print("num_examples : " + str(num_examples))
 
 saver = tf.train.Saver()
 
-print "===  Starting Session ==="
+print("===  Starting Session ===")
 sess = tf.Session()
 
 i_iter = 0
@@ -341,20 +359,21 @@ if ckpt and ckpt.model_checkpoint_path:
     saver.restore(sess, ckpt.model_checkpoint_path)
     epoch_n = int(ckpt.model_checkpoint_path.split('-')[1])
     i_iter = (epoch_n+1) * (num_examples/batch_size)
-    print "Restored Epoch ", epoch_n
+    print("Restored Epoch ", epoch_n)
 else:
     # no checkpoint exists. create checkpoints directory if it does not exist.
     if not os.path.exists('checkpoints'):
         os.makedirs('checkpoints')
-    init  = tf.initialize_all_variables()
+    init = tf.initialize_all_variables()
     sess.run(init)
 
-print "=== Training ==="
-print "Initial Accuracy: ", sess.run(accuracy, feed_dict={inputs: mnist.test.images, outputs: mnist.test.labels, is_training: False}), "%"
+print("=== Training ===")
+print("Initial Accuracy: ", sess.run(accuracy, feed_dict={inputs: MNIST.test.images, outputs: MNIST.test.labels, is_training: False}), "%")
 
 for i in tqdm(range(i_iter, num_iter)):
-    images, labels = mnist.train.next_batch(batch_size)
+    images, labels = MNIST.train.next_batch(batch_size)
     sess.run(train_step, feed_dict={inputs: images, outputs: labels, is_training: True})
+
     if (i > 1) and ((i+1) % (num_iter/num_epochs) == 0):
         epoch_n = i/(num_examples/batch_size)
         if (epoch_n+1) >= decay_after:
@@ -364,13 +383,13 @@ for i in tqdm(range(i_iter, num_iter)):
             ratio = max(0, ratio / (num_epochs - decay_after))
             sess.run(learning_rate.assign(starter_learning_rate * ratio))
         saver.save(sess, 'checkpoints/model.ckpt', epoch_n)
-        # print "Epoch ", epoch_n, ", Accuracy: ", sess.run(accuracy, feed_dict={inputs: mnist.test.images, outputs:mnist.test.labels, training: False}), "%"
-	with open('train_log', 'ab') as train_log:
+
+        with open('train_log', 'ab') as train_log:
             # write test accuracy to file "train_log"
             train_log_w = csv.writer(train_log)
-            log_i = [epoch_n] + sess.run([accuracy], feed_dict={inputs: mnist.test.images, outputs:mnist.test.labels, is_training: False})
+            log_i = [epoch_n] + sess.run([accuracy], feed_dict={inputs: MNIST.test.images, outputs: MNIST.test.labels, is_training: False})
             train_log_w.writerow(log_i)
 
-print "Final Accuracy: ", sess.run(accuracy, feed_dict={inputs: mnist.test.images, outputs: mnist.test.labels, is_training: False}), "%"
+print("Final Accuracy: ", sess.run(accuracy, feed_dict={inputs: MNIST.test.images, outputs: MNIST.test.labels, is_training: False}), "%")
 
 sess.close()

@@ -19,7 +19,7 @@ TRAIN_IMAGES = 'train-images-idx3-ubyte.gz'
 TRAIN_LABELS = 'train-labels-idx1-ubyte.gz'
 TEST_IMAGES = 't10k-images-idx3-ubyte.gz'
 TEST_LABELS = 't10k-labels-idx1-ubyte.gz'
-TWEEN_DATA_DIR = './TWEEN_data'
+TWEEN_DATA_DIR = './TWEEN_data_40'
 VALIDATION_SIZE = 0
 
 
@@ -71,11 +71,11 @@ def rgb2gray(rgb):
     return numpy.dot(rgb[..., :3], [0.299 * 255, 0.587 * 255, 0.114 * 255])
 
 
-def inverse_gray_scale(gray_scale, two_direction_threshold=0):
+def inverse_gray_scale(gray_scale, black_white_threshold=0):
     for i in range(len(gray_scale)):
         for j in range(len(gray_scale[0])):
-            if two_direction_threshold != 0:
-                if (255 - gray_scale[i, j]) >= two_direction_threshold:
+            if black_white_threshold != 0:
+                if (255 - gray_scale[i, j]) >= black_white_threshold:
                     gray_scale[i, j] = 255.0
                 else:
                     gray_scale[i, j] = 0.0
@@ -250,8 +250,7 @@ class SemiMNISTDataSet(object):
 
         # 未标记数据集设定
         # 使用全部数据集为未标记数据
-        self.all_data_set = DataSet(images, labels)
-        self.unlabeled_data_set = self.all_data_set
+        self.unlabeled_data_set = DataSet(images, labels)
 
         # num of labeled data
         self._num_labeled_examples = num_labeled_examples
@@ -300,30 +299,6 @@ class SemiMNISTDataSet(object):
     def num_unlabeled_examples(self, value):
         self._num_unlabeled_examples = value
 
-    def extend_data_set(self, extra_images, extra_labels):
-
-        # shuffle data set
-        indices = numpy.arange(len(extra_images))
-        shuffled_indices = numpy.random.permutation(indices)
-
-        extra_images = extra_images[shuffled_indices]
-        extra_labels = extra_labels[shuffled_indices]
-
-        extra_data_set = DataSet(extra_images, extra_labels)
-
-        self.labeled_data_set.images = numpy.concatenate((self.labeled_data_set.images, extra_data_set.images))
-        self.labeled_data_set.labels = numpy.concatenate((self.labeled_data_set.labels, extra_data_set.labels))
-
-        # labeled data set also can be used as unsupervised learning
-        self.all_data_set.images = numpy.concatenate((self.all_data_set.images, extra_data_set.images))
-        self.all_data_set.labels = numpy.concatenate((self.all_data_set.labels, extra_data_set.labels))
-
-        # adjust nums
-        self._num_labeled_examples = len(self.labeled_data_set.images)
-        self._num_unlabeled_examples = len(self.unlabeled_data_set.images)
-        self.labeled_data_set.num_examples = len(self.labeled_data_set.images)
-        self.unlabeled_data_set.num_examples = len(self.unlabeled_data_set.images)
-
     def next_batch(self, batch_size):
         unlabeled_images, _ = self.unlabeled_data_set.next_batch(batch_size)
         if batch_size > self.num_labeled_examples:
@@ -334,19 +309,46 @@ class SemiMNISTDataSet(object):
         return images, labels
 
 
+def extend_data_set(semi_data_set, extra_images, extra_labels, num_labeled):
+
+    # shuffle data set
+    indices = numpy.arange(len(extra_images))
+    shuffled_indices = numpy.random.permutation(indices)
+    extra_images = extra_images[shuffled_indices]
+    extra_labels = extra_labels[shuffled_indices]
+    picked_extra_images = extra_images[:num_labeled]
+    picked_extra_labels = extra_labels[:num_labeled]
+
+    extra_data_set = DataSet(picked_extra_images, picked_extra_labels)
+
+    semi_data_set.labeled_data_set.images = \
+        numpy.concatenate((semi_data_set.labeled_data_set.images, extra_data_set.images))
+    semi_data_set.labeled_data_set.labels = \
+        numpy.concatenate((semi_data_set.labeled_data_set.labels, extra_data_set.labels))
+
+
+def black_white_binarizer(images, black_white_threshold):
+
+    print("Converting gray scale color space to black/white binary space. num : " + str(len(images)))
+
+    images.flags.writeable = True
+
+    for index in range(len(images)):
+        for row in range(len(images[0])):
+            for column in range(len(images[0][0])):
+                if images[index][row][column][0] >= black_white_threshold:
+                    images[index][row][column][0] = 255
+                else:
+                    images[index][row][column][0] = 0
+
+
 # 读取数据集处理
-def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
+def read_data_sets(train_dir, num_labeled=100, num_extra=0, is_extend_or_replace=True, one_hot=False):
 
     class DataSets(object):
         pass
 
     data_sets = DataSets()
-
-    if fake_data:
-        data_sets.train = DataSet([], [], fake_data=True)
-        data_sets.validation = DataSet([], [], fake_data=True)
-        data_sets.test = DataSet([], [], fake_data=True)
-        return data_sets
 
     local_file = maybe_download(TRAIN_IMAGES, train_dir)
     train_images = extract_images(local_file)
@@ -360,6 +362,10 @@ def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
     local_file = maybe_download(TEST_LABELS, train_dir)
     test_labels = extract_labels(local_file, one_hot=one_hot)
 
+    # convert color space to black/white binary space
+    black_white_binarizer(train_images, 128)
+    black_white_binarizer(test_images, 128)
+
     validation_images = train_images[:VALIDATION_SIZE]
     validation_labels = train_labels[:VALIDATION_SIZE]
     train_images = train_images[VALIDATION_SIZE:]
@@ -367,9 +373,26 @@ def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
 
     data_sets.train = SemiMNISTDataSet(train_images, train_labels, num_labeled)
 
-    # 使用补间数据扩展标记数据集
-    tween_images, tween_labels = load_tween_images_and_labels(TWEEN_DATA_DIR, True)
-    data_sets.train.extend_data_set(tween_images, tween_labels)
+    if num_extra != 0:
+
+        # 使用补间数据扩展标记数据集
+        tween_images, tween_labels = load_tween_images_and_labels(TWEEN_DATA_DIR, True)
+
+        if is_extend_or_replace == True:
+            # extend mode
+            print("Extend mode.")
+            extend_data_set(data_sets.train, tween_images, tween_labels, num_extra)
+        else:
+            # replace mode
+            print("Replace mode.")
+            extra_train = SemiMNISTDataSet(tween_images, tween_labels, num_extra)
+            data_sets.train.labeled_data_set = extra_train.labeled_data_set
+
+        # adjust num parameter
+        data_sets.train.num_labeled_examples = len(data_sets.train.labeled_data_set.images)
+        data_sets.train.num_unlabeled_examples = len(data_sets.train.unlabeled_data_set.images)
+        data_sets.train.labeled_data_set.num_examples = data_sets.train.num_labeled_examples
+        data_sets.train.unlabeled_data_set.num_examples = data_sets.train.num_unlabeled_examples
 
     print("Labeled   examples num :" + str(data_sets.train.num_labeled_examples))
     print("Unlabeled examples num :" + str(data_sets.train.num_unlabeled_examples))
@@ -380,4 +403,4 @@ def read_data_sets(train_dir, num_labeled=100, fake_data=False, one_hot=False):
 
 # debug
 if __name__ == "__main__":
-    read_data_sets("MNIST_data", num_labeled=100, one_hot=True)
+    read_data_sets("MNIST_data", num_labeled=100, num_extra=100, one_hot=True)
